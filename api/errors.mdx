@@ -1,0 +1,141 @@
+---
+title: 'Error Responses'
+description: 'Reference for all CodeAtlas API error responses, including status codes, error envelope shape, validation errors, and rate limit errors.'
+---
+
+The CodeAtlas API uses a consistent error envelope for every failure response. Understanding the structure makes it straightforward to distinguish client-side mistakes from server-side problems and to surface meaningful messages to users.
+
+## Error envelope
+
+All error responses share the same top-level shape regardless of status code.
+
+<ResponseField name="success" type="boolean" required>
+  Always `false` for error responses.
+</ResponseField>
+
+<ResponseField name="error" type="string" required>
+  Human-readable description of what went wrong.
+</ResponseField>
+
+<ResponseField name="stack" type="string | null">
+  Full error stack trace. Only present when `NODE_ENV` is not `"production"`. Always `null` in production builds.
+</ResponseField>
+
+**Example:**
+
+```json
+{
+  "success": false,
+  "error": "Project not found",
+  "stack": null
+}
+```
+
+## Status codes
+
+### 400 — Validation error
+
+Returned when the request body or parameters fail Zod schema validation. The `error` field describes which field is invalid.
+
+```json
+{
+  "success": false,
+  "error": "Enter a valid GitHub repository URL",
+  "stack": null
+}
+```
+
+Common 400 triggers:
+
+- Missing required body fields
+- `githubUrl` is not a valid `https://github.com/<owner>/<repo>` URL
+- URL contains a protocol other than `https`
+
+### 401 — Unauthorized
+
+Returned when the `Authorization` header is missing or the Bearer token is invalid or expired. Only `POST /api/projects` enforces authentication.
+
+```json
+{
+  "success": false,
+  "error": "No token provided"
+}
+```
+
+```json
+{
+  "success": false,
+  "error": "Invalid or expired token"
+}
+```
+
+### 404 — Not found
+
+Returned when a requested resource does not exist. Examples: an unknown project ID or job ID.
+
+```json
+{
+  "success": false,
+  "error": "Project not found"
+}
+```
+
+```json
+{
+  "success": false,
+  "error": "Job not found"
+}
+```
+
+### 429 — Rate limit exceeded
+
+Returned when a client exceeds one of the two rate limits. The response body follows the standard error envelope.
+
+**Global limit exceeded** (100 req/min):
+
+```json
+{
+  "success": false,
+  "error": "Too many requests from this IP, please try again later."
+}
+```
+
+**Ingestion limit exceeded** (5 req/15 min on `POST /api/projects`):
+
+```json
+{
+  "success": false,
+  "error": "Too many project ingestion requests. Please try again after 15 minutes."
+}
+```
+
+When you receive `429`, check the rate limit headers to determine when your quota resets:
+
+| Header | Value |
+| ------ | ----- |
+| `RateLimit-Limit` | Maximum allowed requests in the window |
+| `RateLimit-Remaining` | Requests remaining (will be `0` when limit is hit) |
+| `RateLimit-Reset` | Unix timestamp when the window resets |
+
+<Warning>
+The ingestion limit is applied per IP address. If you are running CodeAtlas behind a reverse proxy, make sure the proxy forwards the original client IP so rate limiting works correctly.
+</Warning>
+
+### 500 — Internal server error
+
+Returned for unexpected server-side failures such as database errors or unhandled exceptions. The `error` message may include details from the underlying service.
+
+```json
+{
+  "success": false,
+  "error": "Internal Server Error",
+  "stack": null
+}
+```
+
+In development, the `stack` field will contain the full stack trace to aid debugging.
+
+## Distinguishing client vs server errors
+
+- **4xx errors** are caused by the client — an invalid request, missing auth, or non-existent resource. Fix the request before retrying.
+- **5xx errors** are caused by the server. Retrying after a brief delay is appropriate; if errors persist, check your environment configuration and backend logs.

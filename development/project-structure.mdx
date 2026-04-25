@@ -1,0 +1,194 @@
+---
+title: "Project structure: navigating the CodeAtlas monorepo"
+description: "A tour of the monorepo layout — what lives in each workspace, how the packages relate to each other, and what every root script does."
+---
+
+CodeAtlas is organized as an npm workspace monorepo with three packages sharing a single `node_modules` tree. The root `package.json` owns the dev tooling and workspace scripts; the actual application code lives inside `frontend/`, `backend/`, and `packages/shared-schema/`. Understanding this layout is the fastest way to orient yourself before making changes.
+
+## Directory tree
+
+```
+CodeAtlas/
+├── frontend/                   # Next.js 16 web application
+│   ├── src/
+│   │   ├── app/                # App Router pages and layouts
+│   │   │   ├── admin/
+│   │   │   ├── auth/
+│   │   │   ├── dashboard/
+│   │   │   ├── explore/
+│   │   │   ├── login/
+│   │   │   ├── signup/
+│   │   │   ├── layout.tsx
+│   │   │   └── page.tsx
+│   │   ├── components/         # Shared React components
+│   │   ├── lib/                # Utilities and Supabase browser client
+│   │   ├── providers/          # Context providers (auth, etc.)
+│   │   └── utils/
+│   └── package.json
+│
+├── backend/                    # Express API server
+│   ├── src/
+│   │   ├── app.ts              # Express app setup and middleware wiring
+│   │   ├── server.ts           # HTTP server entry point
+│   │   ├── config/             # Logger (Winston) and Supabase client
+│   │   ├── controllers/        # Request handlers
+│   │   ├── routes/             # Express router definitions
+│   │   ├── services/           # Business logic and external integrations
+│   │   ├── middleware/         # Auth, rate limiting, validation, errors
+│   │   ├── validations/        # Zod request schemas
+│   │   ├── utils/              # asyncHandler and other helpers
+│   │   └── test/               # Unit and integration tests
+│   └── package.json
+│
+├── packages/
+│   └── shared-schema/          # Shared TypeScript types and Zod schemas
+│       └── src/
+│           ├── index.ts
+│           ├── project.schema.ts
+│           ├── project.types.ts
+│           ├── analysis.schema.ts
+│           ├── security.schema.ts
+│           ├── jobs.types.ts
+│           ├── docs_node.types.ts
+│           └── sec_find.types.ts
+│
+└── package.json                # Root workspace configuration
+```
+
+## Root workspace scripts
+
+The root `package.json` defines all top-level commands. Run these from the repository root.
+
+| Script | Command | Purpose |
+|---|---|---|
+| `dev` | `npm run dev` | Start frontend and backend concurrently |
+| `dev:frontend` | `npm run dev:frontend` | Next.js dev server only (port 3000) |
+| `dev:backend` | `npm run dev:backend` | Express dev server only (port 5000) |
+| `build` | `npm run build` | Compile frontend then backend for production |
+| `test` | `npm run test` | Run the full Vitest suite once |
+| `test:watch` | `npm run test:watch` | Run Vitest in interactive watch mode |
+| `test:coverage` | `npm run test:coverage` | Run tests and generate a coverage report |
+| `lint` | `npm run lint` | Check all workspaces with ESLint |
+| `format` | `npm run format` | Auto-format all files with Prettier |
+
+## Backend layout
+
+The backend is a TypeScript Express server. All source files live in `backend/src/`.
+
+### Entry points
+
+- **`app.ts`** — Configures the Express instance: attaches global middleware (CORS, JSON body parsing, rate limiters, request logging) and mounts the project and job routers.
+- **`server.ts`** — Creates the HTTP server, binds to `PORT` (default `5000`), and starts listening.
+
+### Key directories
+
+<AccordionGroup>
+  <Accordion title="controllers/">
+    Contains two files — `project.controller.ts` and `jobs.controller.ts`. Controllers receive validated requests, call into service layer methods, and return JSON responses. They do not contain business logic.
+  </Accordion>
+  <Accordion title="routes/">
+    Defines Express routers for `/api/projects` (`project.routes.ts`) and `/api/jobs` (`jobs.routes.ts`). Each route applies the relevant middleware (auth, validation, rate limiting) before handing off to a controller.
+  </Accordion>
+  <Accordion title="services/">
+    The core business logic layer. Eight services handle distinct concerns:
+
+    | Service | File | Responsibility |
+    |---|---|---|
+    | ProjectService | `project.service.ts` | Project lifecycle and metadata |
+    | JobService | `jobs.service.ts` | Job state machine and progress |
+    | GitService | `git.service.ts` | Repository cloning and cleanup |
+    | FileService (RepoContext) | `repoContext.service.ts` | Code scanning and context assembly |
+    | AnalysisService | `analysis.service.ts` | Structural analysis via Gemini |
+    | SecurityService | `security.service.ts` | OWASP vulnerability scanning |
+    | GeminiService | `gemini.service.ts` | Gemini API client with retry logic |
+    | PersistenceService | `persistence.service.ts` | Data and embedding storage |
+  </Accordion>
+  <Accordion title="middleware/">
+    Four middleware modules:
+
+    - **`auth.middleware.ts`** — Validates Supabase JWTs and attaches the user to `req.user`.
+    - **`rateLimit.middleware.ts`** — Global (100 req/min) and ingestion-specific (5 req/15 min) limiters.
+    - **`validation.middleware.ts`** — Runs Zod schemas against request bodies, returning `400` on failure.
+    - **`error.middleware.ts`** — Catches all unhandled errors and formats a safe JSON error response.
+  </Accordion>
+  <Accordion title="validations/">
+    Zod schemas for all request bodies, imported by `validation.middleware.ts` to gate controller execution.
+  </Accordion>
+  <Accordion title="utils/">
+    Currently contains `asyncHandler.ts` — a wrapper that catches async errors and forwards them to Express's error middleware, eliminating repetitive `try/catch` blocks in controllers.
+  </Accordion>
+  <Accordion title="config/">
+    Two configuration modules:
+
+    - **`logger.ts`** — Winston logger instance with configurable log level via `LOG_LEVEL`.
+    - **`supabase.ts`** — Creates and exports the Supabase service-role client used server-side.
+  </Accordion>
+  <Accordion title="test/">
+    Vitest test files for each major concern. See [Testing](/development/testing) for details.
+  </Accordion>
+</AccordionGroup>
+
+## Frontend layout
+
+The frontend is a Next.js 16 application using the App Router. All source files live in `frontend/src/`.
+
+### `app/`
+
+Next.js App Router pages and layouts. Each subdirectory corresponds to a URL segment:
+
+| Directory | Route | Purpose |
+|---|---|---|
+| `app/page.tsx` | `/` | Landing page |
+| `app/login/` | `/login` | Sign-in page |
+| `app/signup/` | `/signup` | Registration page |
+| `app/auth/` | `/auth` | Auth callback handling |
+| `app/dashboard/` | `/dashboard` | User's project dashboard |
+| `app/explore/` | `/explore` | Public repository browser |
+| `app/admin/` | `/admin` | Admin tooling |
+
+### `components/`
+
+Reusable React components shared across pages. Built with React 19, Tailwind CSS, and shadcn/ui.
+
+### `lib/`
+
+Utility modules and the Supabase browser client. Code here is safe to import from both server and client components.
+
+### `providers/`
+
+React context providers mounted in the root layout. Currently handles authentication state (Supabase session) and distributes it through the component tree.
+
+### `utils/`
+
+Frontend-specific utility functions, separate from the shared-schema package.
+
+## The `shared-schema` package
+
+`packages/shared-schema` exports the TypeScript types and Zod schemas that both the backend and frontend depend on. Using a shared package ensures that response shapes and validation rules stay in sync without duplication.
+
+```
+packages/shared-schema/src/
+├── index.ts              # Re-exports everything
+├── project.schema.ts     # Zod schema for project ingestion requests
+├── project.types.ts      # TypeScript types for project records
+├── analysis.schema.ts    # Schema for Gemini analysis responses
+├── security.schema.ts    # Schema for security findings
+├── jobs.types.ts         # Types for ingestion job records
+├── docs_node.types.ts    # Types for documentation tree nodes
+└── sec_find.types.ts     # Types for security finding records
+```
+
+<Note>
+Import from `@codeatlas/shared-schema` (the package name defined in `packages/shared-schema/package.json`) rather than using relative paths across workspace boundaries.
+</Note>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Testing" icon="flask-conical" href="/development/testing">
+    How to run tests, what is covered, and how to read coverage reports.
+  </Card>
+  <Card title="Contributing" icon="git-pull-request" href="/development/contributing">
+    Branching strategy, commit conventions, and the pre-PR checklist.
+  </Card>
+</CardGroup>

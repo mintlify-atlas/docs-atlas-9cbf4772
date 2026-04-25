@@ -1,0 +1,97 @@
+{
+  "projectType": "saas",
+  "projectName": "CodeAtlas",
+  "projectDescription": "CodeAtlas is a full-stack SaaS application that transforms GitHub repositories into AI-powered interactive architectural documentation and knowledge maps using Google Gemini.",
+  "theme": "luma",
+  "primaryColor": "#6366f1",
+  "lightColor": "#818cf8",
+  "darkColor": "#4338ca",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "architecture"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/repository-analysis",
+              "features/security-audit",
+              "features/knowledge-map",
+              "features/job-tracking"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/authentication",
+              "configuration/rate-limiting"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "development/project-structure",
+              "development/testing",
+              "development/contributing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication",
+              "api/errors"
+            ]
+          },
+          {
+            "group": "Endpoints",
+            "pages": [
+              "api/projects",
+              "api/jobs"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "AI-powered architectural analysis using Google Gemini to generate structured documentation from raw source code",
+    "Automated OWASP Top 10 security auditing with file-level vulnerability mapping and fix proposals",
+    "Real-time ingestion job tracking with progress updates through a five-stage pipeline (PENDING → CLONING → ANALYZING → SECURITY_AUDIT → COMPLETED)",
+    "Interactive 3D knowledge map visualization built with Three.js for exploring codebase structure",
+    "Vector embeddings for semantic search across documentation nodes using Gemini embeddings",
+    "Supabase-backed authentication with JWT validation, rate limiting (5 ingestions per 15 minutes), and row-level security",
+    "Monorepo architecture with shared TypeScript/Zod schemas across frontend and backend",
+    "Admin panel for managing projects and reviewing/editing AI-generated documentation nodes"
+  ],
+  "publicApiSurface": [
+    "GET /api/projects — List all analyzed projects",
+    "GET /api/projects/:id — Get project metadata",
+    "GET /api/projects/:id/nodes — Get documentation tree (architectural pillars)",
+    "GET /api/projects/:id/security — Get security findings",
+    "POST /api/projects — Ingest new repository (requires Bearer token auth)",
+    "GET /api/jobs/:id — Poll job status and progress",
+    "ProjectService — project lifecycle and metadata management",
+    "JobService — job state machine and progress tracking",
+    "AnalysisService.runStructuralScout() — architectural analysis via Gemini",
+    "SecurityService.runSecurityAudit() — OWASP vulnerability detection via Gemini",
+    "GeminiService.generateStructuredJson() — structured JSON generation with retry logic",
+    "PersistenceService — data persistence and embedding generation",
+    "GitService — repository cloning and cleanup",
+    "RepoContextService — file scanning and context assembly"
+  ]
+}

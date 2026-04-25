@@ -1,0 +1,87 @@
+---
+title: 'API Reference Overview'
+description: 'A complete reference for the CodeAtlas REST API, including endpoints, response envelopes, status codes, and rate limiting.'
+---
+
+The CodeAtlas API is a JSON REST API served by an Express backend. It powers the CodeAtlas frontend and is available for direct integration. All endpoints are prefixed with `/api` and return a consistent response envelope. During local development the server runs at `http://localhost:5000`; in production, replace this with your deployed backend URL.
+
+## Base URL
+
+| Environment | Base URL |
+| ----------- | -------- |
+| Development | `http://localhost:5000` |
+| Production  | `https://<your-backend-domain>` |
+
+## Endpoints
+
+| Method | Path | Auth required | Description |
+| ------ | ---- | ------------- | ----------- |
+| `GET` | `/api/projects` | No | List all successfully analyzed projects |
+| `GET` | `/api/projects/:id` | No | Get metadata for a single project |
+| `GET` | `/api/projects/:id/nodes` | No | Get the documentation tree for a project |
+| `GET` | `/api/projects/:id/security` | No | Get security findings for a project |
+| `POST` | `/api/projects` | **Yes** | Ingest a new GitHub repository |
+| `GET` | `/api/jobs/:id` | No | Poll the status of an ingestion job |
+
+## Response envelope
+
+Every response, whether successful or not, wraps its payload in a consistent envelope.
+
+**Success responses** include `success: true` and a `data` field:
+
+```json
+{
+  "success": true,
+  "data": { ... }
+}
+```
+
+**Error responses** include `success: false` and an `error` string:
+
+```json
+{
+  "success": false,
+  "error": "Descriptive error message",
+  "stack": null
+}
+```
+
+<Note>
+The `stack` field is only included in development (`NODE_ENV !== "production"`). It contains the full error stack trace and is always `null` in production.
+</Note>
+
+## HTTP status codes
+
+| Code | Meaning |
+| ---- | ------- |
+| `200` | Request succeeded |
+| `201` | Resource created successfully |
+| `400` | Validation error — check the request body or parameters |
+| `401` | Authentication required or token is invalid |
+| `404` | Resource not found |
+| `429` | Rate limit exceeded |
+| `500` | Internal server error |
+
+## Rate limiting
+
+Every API response includes standard rate limit headers so clients can track their quota.
+
+| Header | Description |
+| ------ | ----------- |
+| `RateLimit-Limit` | Maximum requests allowed in the current window |
+| `RateLimit-Remaining` | Requests remaining before the limit resets |
+| `RateLimit-Reset` | Unix timestamp when the window resets |
+
+Two separate limits apply:
+
+- **Global limit** — 100 requests per minute per IP, applied to all routes.
+- **Ingestion limit** — 5 requests per 15 minutes per IP, applied only to `POST /api/projects`.
+
+When either limit is exceeded the API returns `429` with the error envelope. See the [errors reference](/api/errors) for the exact response shape.
+
+## Further reading
+
+- [Authentication](/api/authentication) — how to obtain and send a Bearer token
+- [Errors](/api/errors) — full error response reference
+- [Projects](/api/projects) — all five project endpoints
+- [Jobs](/api/jobs) — polling ingestion job status

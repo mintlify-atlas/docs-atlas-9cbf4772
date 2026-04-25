@@ -1,0 +1,185 @@
+---
+title: "Testing: Vitest configuration, commands, and coverage"
+description: "How CodeAtlas uses Vitest to test services, API endpoints, and middleware — including how to run tests, watch for changes, and generate coverage reports."
+---
+
+CodeAtlas uses [Vitest](https://vitest.dev) as its test runner. All tests live in `backend/src/test/` and run from the repository root via npm workspace scripts. The suite covers unit tests for individual services, integration tests for API endpoints using `supertest`, and middleware tests for authentication and rate limiting — with mocks provided for all external dependencies (Supabase, Gemini API, Git).
+
+## Test commands
+
+Run these from the repository root:
+
+<CodeGroup>
+
+```bash Run once
+npm run test
+```
+
+```bash Watch mode
+npm run test:watch
+```
+
+```bash Coverage report
+npm run test:coverage
+```
+
+</CodeGroup>
+
+| Command | Underlying call | When to use |
+|---|---|---|
+| `npm run test` | `vitest run` | CI, pre-commit, quick validation |
+| `npm run test:watch` | `vitest` | During development — re-runs on file changes |
+| `npm run test:coverage` | `vitest run --coverage` | Before a PR to check coverage gaps |
+
+## Vitest configuration
+
+The configuration lives at the repository root in `vitest.config.ts`:
+
+```typescript vitest.config.ts
+import { defineConfig, defaultExclude } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    globals: true,
+    environment: 'node',
+    include: ['**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}'],
+    exclude: [
+      ...defaultExclude,
+      '**/temp/**',
+      '**/dist/**',
+      '**/build/**',
+      '**/frontend/.next/**',
+    ],
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'json', 'html'],
+    },
+  },
+});
+```
+
+Key settings:
+
+- **`globals: true`** — Makes `describe`, `it`, `expect`, `vi`, and `beforeEach` available without importing them.
+- **`environment: 'node'`** — Tests run in a Node.js environment, not a browser (jsdom).
+- **Coverage provider: `v8`** — Uses Node's built-in V8 coverage engine, which is faster than Babel-based alternatives.
+- **Coverage reporters** — `text` prints a summary to the terminal; `json` and `html` write reports to `coverage/` for detailed inspection.
+
+## What is tested
+
+### Unit tests — services
+
+Service unit tests mock all external dependencies (Supabase, file system, Git) so each service's logic can be verified in isolation.
+
+<AccordionGroup>
+  <Accordion title="JobService (jobs.test.ts)">
+    Tests the job state machine using a fully mocked Supabase client.
+
+    - `createJob` — verifies a `PENDING` record is inserted with the correct `project_id`.
+    - `updateJobStatus` — confirms status and progress fields are written correctly, and that `error_message` is included on `FAILED` transitions.
+    - `getJobById` — checks that the service returns the row on success, `null` on a miss, and throws on a database error.
+  </Accordion>
+  <Accordion title="GeminiService (geminiService.test.ts)">
+    Tests the Gemini API client wrapper, including retry logic and response parsing.
+  </Accordion>
+  <Accordion title="GitService (gitService.test.ts)">
+    Tests repository cloning and cleanup flows with mocked child-process calls.
+  </Accordion>
+  <Accordion title="AnalysisService and SecurityService (analysisSecurityService.test.ts)">
+    Tests the structural analysis and OWASP vulnerability scanning pipelines against mocked Gemini responses.
+  </Accordion>
+  <Accordion title="PersistenceService (persistentService.test.ts)">
+    Tests data persistence and embedding generation with a mocked Supabase client.
+  </Accordion>
+</AccordionGroup>
+
+### Integration tests — API endpoints
+
+Integration tests mount the full Express app using `supertest` and exercise the HTTP layer end-to-end. External services (Supabase, Git, AI services) are mocked at the module level using `vi.mock`.
+
+**`project.test.ts`** covers the `Project API Suite`:
+
+| Endpoint | Test scenario |
+|---|---|
+| `POST /api/projects` | Returns `400` when `githubUrl` is missing |
+| `POST /api/projects` | Returns `201` and a `projectId`/`jobId` on a valid request |
+| `GET /api/projects/:id` | Returns `200` with project details when the record exists |
+| `GET /api/projects/:id` | Returns `404` when the project is not found |
+| `GET /api/projects/:id/nodes` | Returns the documentation tree with `PILLAR` and `SUMMARY` nodes |
+| `GET /api/projects/:id/security` | Returns security findings with severity levels |
+| Unknown routes | Returns `404` for unregistered paths |
+
+### Middleware tests — rate limiting
+
+**`rateLimit.test.ts`** verifies the ingestion rate limiter enforces its window correctly:
+
+- Confirms 5 sequential requests to `POST /api/projects` all return `201`.
+- Confirms the 6th request within the same window returns `429` with the message `"Too many project ingestion requests"`.
+
+<Note>
+The rate limiter's in-memory state is reset between tests using `ingestionRateLimiter.resetKey('::ffff:127.0.0.1')` in the `beforeEach` hook, so tests do not bleed state into each other.
+</Note>
+
+## How mocking works
+
+Tests use three patterns to isolate external dependencies:
+
+**Environment hoisting** — `vi.hoisted()` sets required environment variables before any module is imported, preventing the Supabase and Gemini clients from throwing on initialization:
+
+```typescript
+vi.hoisted(() => {
+  process.env.SUPABASE_URL = 'https://mock.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'mock-key';
+  process.env.GOOGLE_GENAI_API_KEY = 'mock-ai-key';
+  process.env.NODE_ENV = 'test';
+});
+```
+
+**Module mocking** — `vi.mock()` replaces entire modules with controlled implementations:
+
+```typescript
+vi.mock('../config/supabase.js', () => ({
+  supabase: {
+    from: vi.fn(() => ({
+      select: vi.fn().mockReturnThis(),
+      insert: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      single: vi.fn(() => Promise.resolve({ data: mockJob, error: null })),
+    })),
+  },
+}));
+```
+
+**Auth middleware bypass** — The auth middleware is replaced with a stub that injects a mock user, so integration tests do not require real JWT tokens:
+
+```typescript
+vi.mock('../middleware/auth.middleware.js', () => ({
+  authenticateUser: vi.fn((req, _res, next) => {
+    req.user = { id: 'test-user-uuid', email: 'tester@codewiki.ai' };
+    next();
+  }),
+}));
+```
+
+## Coverage reporting
+
+After running `npm run test:coverage`, three reports are written to `coverage/`:
+
+- **Terminal** — A per-file summary table with statement, branch, function, and line percentages printed immediately after the run.
+- **`coverage/coverage.json`** — Machine-readable JSON suitable for CI badges and tooling.
+- **`coverage/index.html`** — An interactive HTML report. Open it in a browser to drill into uncovered branches line by line.
+
+<Tip>
+Open `coverage/index.html` locally to identify untested branches before submitting a pull request. Line-level highlighting makes it easy to spot exactly which code paths need new test cases.
+</Tip>
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Project structure" icon="folder-tree" href="/development/project-structure">
+    Where test files live relative to the rest of the backend source.
+  </Card>
+  <Card title="Contributing" icon="git-pull-request" href="/development/contributing">
+    Pre-PR checklist and quality commands including `npm run test`.
+  </Card>
+</CardGroup>

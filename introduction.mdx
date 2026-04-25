@@ -1,0 +1,63 @@
+---
+title: "CodeAtlas: AI-powered codebase knowledge maps"
+description: "CodeAtlas transforms any GitHub repository into interactive architectural documentation using Google Gemini AI. Understand complex codebases instantly with AI-generated insights, security audits, and 3D knowledge maps."
+---
+
+CodeAtlas is a full-stack SaaS application that converts GitHub repositories into AI-powered knowledge maps. By combining Google Gemini's language understanding with semantic vector search and interactive 3D visualization, CodeAtlas helps developers and teams understand unfamiliar codebases instantly — without reading every file manually.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Set up CodeAtlas and analyze your first repository in minutes
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    Understand how the multi-stage AI ingestion pipeline works
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/overview">
+    Explore the REST API to integrate CodeAtlas into your workflow
+  </Card>
+  <Card title="Security Audit" icon="shield-check" href="/features/security-audit">
+    Automated OWASP Top 10 scanning with file-level vulnerability mapping
+  </Card>
+</CardGroup>
+
+## What CodeAtlas does
+
+When you submit a GitHub repository URL, CodeAtlas runs it through a five-stage AI pipeline:
+
+1. **Clones** the repository securely
+2. **Scans and indexes** all meaningful source files
+3. **Analyzes** the architecture using Google Gemini to identify domain pillars
+4. **Audits** for security vulnerabilities against OWASP Top 10 (runs within the analysis phase)
+5. **Persists** structured documentation nodes with vector embeddings for semantic search
+
+The result is a navigable knowledge map — organized into architectural pillars, security findings, and a searchable documentation tree — available immediately through the web UI or REST API.
+
+## Key capabilities
+
+<CardGroup cols={2}>
+  <Card title="Repository analysis" icon="magnifying-glass-chart" href="/features/repository-analysis">
+    AI identifies architectural pillars, key files, and domain boundaries
+  </Card>
+  <Card title="Security auditing" icon="bug" href="/features/security-audit">
+    Automated vulnerability detection mapped to exact file paths and line numbers
+  </Card>
+  <Card title="Knowledge map" icon="map" href="/features/knowledge-map">
+    Interactive 3D visualization of your codebase structure
+  </Card>
+  <Card title="Job tracking" icon="loader" href="/features/job-tracking">
+    Real-time progress updates as your repository is being analyzed
+  </Card>
+</CardGroup>
+
+## Tech stack
+
+CodeAtlas is built with a modern, type-safe stack:
+
+| Layer | Technology |
+|---|---|
+| Frontend | Next.js 16, React 19, Tailwind CSS, shadcn/ui, Three.js |
+| Backend | Node.js, Express.js, TypeScript |
+| AI | Google Gemini API, LangChain |
+| Database | Supabase (PostgreSQL) with vector embeddings |
+| Auth | Supabase Auth with JWT validation |
+| Validation | Zod schemas shared across frontend and backend |

@@ -1,0 +1,169 @@
+---
+title: "Job tracking: monitor repository ingestion progress"
+description: "Track the five-stage ingestion pipeline with real-time progress percentages, polling the GET /api/jobs/:id endpoint until your repository analysis reaches COMPLETED or FAILED."
+---
+
+CodeAtlas processes repository analysis asynchronously. When you submit a repository, you receive a `jobId` immediately and then poll the job endpoint to monitor progress. This page covers the job lifecycle, all possible states, the `IngestionJob` response shape, and recommended polling strategies.
+
+## Job states
+
+Every ingestion job moves through a defined sequence of states. The `JobStatus` type has four active states plus a terminal failure state:
+
+```typescript
+type JobStatus =
+  | 'PENDING'
+  | 'CLONING'
+  | 'ANALYZING'
+  | 'COMPLETED'
+  | 'FAILED';
+```
+
+<Note>
+The README documents a `SECURITY_AUDIT` state in the pipeline description, but the canonical `JobStatus` type in `packages/shared-schema/src/jobs.types.ts` does not include it as a discrete state. The security audit runs inside the `ANALYZING` phase. Poll for `COMPLETED` to know when both the architectural analysis and the security audit are done.
+</Note>
+
+### What each state means
+
+<Steps>
+  <Step title="PENDING">
+    The job has been created and queued but processing has not started. Progress is `0`. This state is brief — the pipeline begins immediately after job creation.
+  </Step>
+  <Step title="CLONING">
+    The backend is cloning the repository from GitHub. Progress is typically low (around `10–20`). The GitService is pulling source files via SSH or HTTPS before any AI analysis begins.
+  </Step>
+  <Step title="ANALYZING">
+    The repository has been cloned and both the structural architectural analysis and the security audit are running. This is the longest-running state — Gemini is generating the `StructuralManifest`, the security report, and all vector embeddings. Progress advances from roughly `20` to `95` during this phase.
+  </Step>
+  <Step title="COMPLETED">
+    All stages finished successfully. Progress is `100`. The documentation nodes and security findings are persisted and available through the API. You can now fetch `/api/projects/:id/nodes` and `/api/projects/:id/security`.
+  </Step>
+  <Step title="FAILED">
+    An unrecoverable error occurred at some point in the pipeline. The `error_message` field contains a description of what went wrong. Progress stops wherever the pipeline failed.
+  </Step>
+</Steps>
+
+## The IngestionJob response shape
+
+Polling the job endpoint returns an `IngestionJob` object:
+
+```typescript
+interface IngestionJob {
+  id: string;
+  project_id: string;
+  status: JobStatus;        // current state in the pipeline
+  error_message?: string | null; // populated only when status is 'FAILED'
+  progress: number;         // integer 0–100
+  created_at: string;       // ISO 8601 timestamp
+  updated_at: string;       // ISO 8601 timestamp, changes on every update
+}
+```
+
+## How to poll job status
+
+Send a `GET` request to the jobs endpoint with the `jobId` returned from project creation:
+
+```bash
+GET /api/jobs/:id
+```
+
+No authentication is required for this endpoint.
+
+### Example responses
+
+<CodeGroup>
+
+```json In progress (ANALYZING)
+{
+  "success": true,
+  "data": {
+    "id": "job_456abc",
+    "project_id": "proj_123xyz",
+    "status": "ANALYZING",
+    "error_message": null,
+    "progress": 45,
+    "created_at": "2024-01-15T10:30:00Z",
+    "updated_at": "2024-01-15T10:30:28Z"
+  }
+}
+```
+
+```json Completed
+{
+  "success": true,
+  "data": {
+    "id": "job_456abc",
+    "project_id": "proj_123xyz",
+    "status": "COMPLETED",
+    "error_message": null,
+    "progress": 100,
+    "created_at": "2024-01-15T10:30:00Z",
+    "updated_at": "2024-01-15T10:31:42Z"
+  }
+}
+```
+
+```json Failed
+{
+  "success": true,
+  "data": {
+    "id": "job_456abc",
+    "project_id": "proj_123xyz",
+    "status": "FAILED",
+    "error_message": "Gemini Service exhausted all 5 retries.",
+    "progress": 35,
+    "created_at": "2024-01-15T10:30:00Z",
+    "updated_at": "2024-01-15T10:31:05Z"
+  }
+}
+```
+
+</CodeGroup>
+
+## Recommended polling strategy
+
+Poll the job endpoint at a regular interval and stop when the status reaches a terminal state (`COMPLETED` or `FAILED`):
+
+```typescript
+async function pollJobUntilDone(
+  jobId: string,
+  intervalMs = 3000
+): Promise<IngestionJob> {
+  while (true) {
+    const res = await fetch(`/api/jobs/${jobId}`);
+    const { data }: { data: IngestionJob } = await res.json();
+
+    if (data.status === 'COMPLETED' || data.status === 'FAILED') {
+      return data;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+}
+```
+
+<Tip>
+A 3-second polling interval is a reasonable default. Analysis typically completes in under a minute for small-to-medium repositories. For very large repositories with many files, allow up to several minutes before treating a job as hung.
+</Tip>
+
+## Error handling in FAILED state
+
+When a job reaches `FAILED`, the `error_message` field contains the reason. Common failure causes include:
+
+| Cause | Typical error_message |
+|---|---|
+| Gemini API unavailable after retries | `"Gemini Service exhausted all 5 retries."` |
+| Repository clone failure | Describes the Git error (e.g., repository not found, access denied) |
+| Gemini schema validation failure | `"Gemini output did not match the expected application schema."` |
+| Database write failure | Describes the Supabase error |
+
+A failed job does not block future submissions. You can re-submit the same repository URL after a `FAILED` job — a new job and project record will be created.
+
+<Warning>
+A `FAILED` job does not automatically clean up partially persisted data. If the pipeline failed partway through, there may be incomplete documentation nodes in the database. Submitting the repository again will create a fresh project record and job.
+</Warning>
+
+## Progress percentage
+
+The `progress` field is an integer between `0` and `100`. The `JobService.updateJobStatus` method sets this value each time a job transitions between stages. The frontend `JobProgress` component renders this as a progress bar and uses the `status` field to determine which pipeline step to highlight as active.
+
+You can display the `progress` value directly as a percentage in your own integrations without any transformation.

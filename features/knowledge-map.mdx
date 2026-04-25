@@ -1,0 +1,113 @@
+---
+title: "Knowledge map: interactive codebase visualization"
+description: "Explore CodeAtlas's 3D knowledge map — an interactive visualization of a repository's architectural pillars, documentation nodes, and semantic relationships built with Three.js."
+---
+
+CodeAtlas transforms the AI-generated analysis of your repository into an interactive knowledge map you can browse, search, and navigate. This page covers the two main views — the **Explore** page for discovering public projects and the **project documentation view** for navigating a single repository's architectural structure — as well as the semantic search and admin editing capabilities.
+
+## The explore view
+
+The Explore page (`/explore`) is a searchable index of every public repository that has been analyzed by CodeAtlas. It shows project cards with the repository owner, name, description, and creation date.
+
+**Filtering and search:** The search bar filters projects in real time by repository name, owner, or description. Filtering runs client-side against all loaded projects, so results appear as you type without additional API calls.
+
+**Project visibility:** Each card displays whether the repository is public or private. The Explore page shows only public repositories. Private repositories are accessible only through the authenticated dashboard.
+
+Clicking any card navigates to `/dashboard/projects/:id`, the full project documentation view.
+
+## The dashboard view
+
+The authenticated dashboard (`/dashboard`) shows all repositories you have ingested, including private ones. It supports:
+
+- **Server-side search** — Queries the backend API with a 400ms debounce, so searches are sent only after you stop typing
+- **Create project dialog** — A form to submit a new GitHub repository URL for ingestion
+- **Project cards** — A responsive grid showing each project's name, owner, and description
+
+<Note>
+The dashboard requires authentication. You must be signed in to access it or to submit a new repository for analysis.
+</Note>
+
+## The project documentation view
+
+Once a repository has been analyzed, its full knowledge map is available at `/dashboard/projects/:id`. The view has two main areas:
+
+### Sidebar navigation
+
+A fixed sidebar lists:
+- **Overview** — The top-level project summary and quick start guide
+- **Architecture pillars** — One entry per AI-identified domain pillar (e.g., "Identity & Trust Perimeter", "Real-time Data Orchestration")
+- **Security audit** — A link to the security findings panel, with a badge showing the total finding count
+
+Selecting any pillar or section updates the main content area without a full page reload.
+
+### Main content area
+
+The content area renders one of three views depending on what you have selected in the sidebar:
+
+<Tabs>
+  <Tab title="Overview">
+    The overview section displays:
+    - **Project summary** — The `highLevelSummary` from the `StructuralManifest`, written by Gemini as a 3–4 sentence architectural description
+    - **Quick start** — The `quickStart` field rendered in a monospace block, showing the prerequisites and commands to run the project
+    - **Architecture pillars grid** — Cards for each pillar, showing the name, a truncated description, and up to 4 auto-detected technology tags (e.g., TypeScript, PostgreSQL, JWT)
+
+    Clicking any pillar card navigates to that pillar's detail view.
+  </Tab>
+  <Tab title="Pillar detail">
+    Selecting a pillar shows:
+    - **Full description** — The complete 4–6 sentence architectural description written by Gemini
+    - **Responsibilities** — Key bullet points extracted from the description, parsed from numbered lists, dash-prefixed lines, or sentence boundaries
+    - **Technologies** — Auto-detected tech keywords and framework names mentioned in the description (React, Supabase, JWT, etc.)
+    - **Documentation nodes** — Any `FILE_DOC` child nodes attached to this pillar, showing file-level documentation
+  </Tab>
+  <Tab title="Security panel">
+    The security panel groups findings by severity (CRITICAL → HIGH → MEDIUM → LOW) and shows:
+    - **Summary grid** — A count of findings at each severity level
+    - **Alert banner** — Shown when there are CRITICAL or HIGH findings requiring immediate attention
+    - **Expandable finding rows** — Click any finding to expand it and see the full description, exact file path and line number, and the AI-generated fix proposal
+  </Tab>
+</Tabs>
+
+## Documentation node hierarchy
+
+The knowledge map is organized as a tree of `DocumentationNode` records with three types:
+
+<CardGroup cols={3}>
+  <Card title="SUMMARY" icon="layer-group">
+    The root node. Contains the project overview and quick start. There is exactly one SUMMARY node per project.
+  </Card>
+  <Card title="PILLAR" icon="columns-3">
+    Domain nodes that are children of the SUMMARY node. Each represents a core functional area identified by Gemini.
+  </Card>
+  <Card title="FILE_DOC" icon="file-code">
+    Optional file-level documentation nodes that are children of PILLAR nodes. Represent specific files within a domain.
+  </Card>
+</CardGroup>
+
+Every node carries a `parent_id` linking it upward in the hierarchy, and an `embedding` vector that enables semantic search across the entire documentation tree.
+
+## Semantic search with vector embeddings
+
+Every documentation node — SUMMARY, PILLAR, and FILE_DOC — has a vector embedding stored in the `embedding` field. Embeddings are generated using the `gemini-embedding-001` model from the node's title and content text.
+
+These embeddings power semantic search, meaning you can find relevant documentation without needing to match exact keywords. A query for "how is user authentication handled" can surface the "Identity & Trust Perimeter" pillar even if those exact words don't appear together in the node content.
+
+<Tip>
+Semantic search is also applied to security findings. Each finding has its own embedding, generated from the vulnerability name, file path, severity, and description. This lets you query for thematically related findings — for example, "input validation issues" — across large security reports.
+</Tip>
+
+## Admin panel for editing documentation nodes
+
+Each `DocumentationNode` includes an `is_edited_by_admin` boolean flag. When an admin edits a node's content through the admin panel, this flag is set to `true`.
+
+This flag serves two purposes:
+- It marks which nodes have been human-reviewed and refined, distinguishing them from raw AI output
+- It allows the system to skip re-generating those nodes during a re-analysis, preserving manually curated content
+
+<Note>
+The `is_edited_by_admin` flag starts as `false` for all nodes created by the AI ingestion pipeline. Only nodes explicitly edited through the admin interface will have this set to `true`.
+</Note>
+
+## Mobile navigation
+
+On smaller screens, the sidebar pillar navigation is hidden. A `MobileNav` component provides equivalent navigation through a collapsible menu, ensuring the full knowledge map is accessible on all device sizes.

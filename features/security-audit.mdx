@@ -1,0 +1,128 @@
+---
+title: "Security audit: automated OWASP vulnerability scanning"
+description: "CodeAtlas automatically scans every analyzed repository for OWASP Top 10 vulnerabilities, mapping each finding to an exact file path, line number, severity, and fix proposal."
+---
+
+CodeAtlas runs an automated security audit on every repository it analyzes, powered by Google Gemini acting as a Senior Security Researcher and DevSecOps Engineer. This page explains what the audit covers, what each finding contains, how severity levels work, and how to access the results through the API or the project UI.
+
+## What the audit covers
+
+The security audit scans for issues in four categories:
+
+- **OWASP Top 10 vulnerabilities** — injection flaws, broken authentication, insecure deserialization, security misconfigurations, and more
+- **Memory leaks** — patterns that indicate memory is allocated but never released
+- **Hardcoded secrets** — API keys, passwords, or tokens embedded directly in source files
+- **Logical flaws** — authorization bypasses, missing input validation, and unsafe assumptions in business logic
+
+<Note>
+The audit is strict by design. Stylistic issues and code quality suggestions are excluded. If no critical or high vulnerabilities are found, the audit still returns low-severity best-practice findings rather than an empty report.
+</Note>
+
+## Severity levels
+
+Every finding is classified into one of four severity levels:
+
+| Severity | Meaning |
+|---|---|
+| `CRITICAL` | Exploitable with no prerequisites; immediate remediation required |
+| `HIGH` | Significant risk; likely to be exploited if the application is exposed |
+| `MEDIUM` | Exploitable under specific conditions; address in the next sprint |
+| `LOW` | Best-practice deviation or low-impact issue; address when convenient |
+
+The UI groups and sorts findings by severity, showing CRITICAL first, followed by HIGH, MEDIUM, and LOW. A banner alerts you when there are any CRITICAL or HIGH findings requiring immediate attention.
+
+## Finding status types
+
+Each finding stored in the database carries a `status` field that you can use to track remediation:
+
+| Status | Meaning |
+|---|---|
+| `OPEN` | The finding has not been reviewed or resolved |
+| `FALSE_POSITIVE` | The finding was reviewed and determined not to be a real issue |
+| `RESOLVED` | The vulnerability has been fixed |
+
+All findings start with `status: "OPEN"` when the audit completes.
+
+## What each finding contains
+
+Each `SecurityFinding` record contains the following fields:
+
+```typescript
+interface SecurityFinding {
+  id: string;
+  project_id: string;
+  file_path: string;             // exact path as it appears in the repository
+  line_number?: number | null;   // approximate line number of the vulnerability
+  severity: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  vulnerability: string;         // short name or category of the vulnerability
+  description: string;           // detailed explanation of the vulnerability
+  suggested_fix?: string | null; // actionable code-fix proposal
+  status: 'OPEN' | 'FALSE_POSITIVE' | 'RESOLVED';
+  embedding: number[] | null;    // vector embedding for semantic search
+  created_at: string;
+}
+```
+
+The `suggested_fix` field contains a specific, actionable remediation written by Gemini — not a generic recommendation. It is tied directly to the code pattern that triggered the finding.
+
+## Fix proposals
+
+Every finding includes a `suggested_fix` that Gemini generates based on the actual vulnerable code. In the project UI, fix proposals appear in an expandable panel beneath each finding, highlighted in green to distinguish them from the problem description.
+
+<Tip>
+Fix proposals describe what to change and how, but they are AI-generated. Review each proposal in context before applying it to production code, especially for CRITICAL findings where the fix may have broader architectural implications.
+</Tip>
+
+## Accessing security results
+
+Retrieve the full security report for a project through the security endpoint:
+
+```bash
+GET /api/projects/:id/security
+```
+
+No authentication is required for this endpoint.
+
+### Example response
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "find_abc123",
+      "project_id": "proj_xyz789",
+      "file_path": "backend/src/config/database.ts",
+      "line_number": 12,
+      "severity": "CRITICAL",
+      "vulnerability": "Hardcoded Credentials",
+      "description": "Database password is hardcoded directly in the source file. Anyone with read access to the repository can obtain full database credentials.",
+      "suggested_fix": "Move the database password to an environment variable (e.g., DB_PASSWORD) and load it via process.env.DB_PASSWORD. Add this variable to your .env.example with a placeholder value.",
+      "status": "OPEN",
+      "embedding": null,
+      "created_at": "2024-01-15T10:35:00Z"
+    },
+    {
+      "id": "find_def456",
+      "project_id": "proj_xyz789",
+      "file_path": "backend/src/routes/admin.ts",
+      "line_number": 34,
+      "severity": "HIGH",
+      "vulnerability": "Broken Access Control",
+      "description": "The /admin/users route does not verify the user's role before returning sensitive data. Any authenticated user can access it.",
+      "suggested_fix": "Add a role check middleware before this route handler that verifies the user has the 'admin' role in their JWT claims. Reject requests with a 403 response if the role check fails.",
+      "status": "OPEN",
+      "embedding": null,
+      "created_at": "2024-01-15T10:35:01Z"
+    }
+  ]
+}
+```
+
+## How embeddings enable semantic search
+
+Each security finding gets a vector embedding generated from its vulnerability name, file path, severity, and description. These embeddings are stored alongside the finding and support semantic queries — for example, finding all injection-related vulnerabilities or all findings in a specific file path cluster — without requiring exact keyword matches.
+
+<Warning>
+If the Gemini API is unavailable or returns an error during the security audit, CodeAtlas returns a degraded `SecurityReport` with `summary: "Security audit failed to process."` and an empty `findings` array rather than failing the entire ingestion job. Repository analysis and documentation will still be available.
+</Warning>

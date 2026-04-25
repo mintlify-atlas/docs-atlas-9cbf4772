@@ -1,0 +1,89 @@
+---
+title: 'Authentication'
+description: 'Learn which CodeAtlas endpoints require authentication, how to obtain a Bearer token, and how to attach it to API requests.'
+---
+
+Most CodeAtlas API endpoints are public and require no credentials. The single exception is `POST /api/projects`, which creates an ingestion job and consumes AI resources — it requires a valid Supabase Bearer token to identify the requesting user.
+
+## Which endpoints require auth
+
+| Endpoint | Auth required |
+| -------- | ------------- |
+| `GET /api/projects` | No |
+| `GET /api/projects/:id` | No |
+| `GET /api/projects/:id/nodes` | No |
+| `GET /api/projects/:id/security` | No |
+| **`POST /api/projects`** | **Yes** |
+| `GET /api/jobs/:id` | No |
+
+## Obtaining a token
+
+CodeAtlas uses [Supabase Auth](https://supabase.com/docs/guides/auth) for identity. To get a Bearer token:
+
+<Steps>
+  <Step title="Sign in to the CodeAtlas UI">
+    Navigate to the CodeAtlas frontend (default: `http://localhost:3000`) and sign in at `/login` using your credentials.
+  </Step>
+  <Step title="Extract the session token">
+    After signing in, open your browser developer tools and run the following in the console to retrieve your active session:
+
+    ```javascript
+    const { data } = await supabase.auth.getSession();
+    console.log(data.session.access_token);
+    ```
+
+    Alternatively, inspect the `sb-<project>-auth-token` cookie in the Application tab — the `access_token` field contains your Bearer token.
+  </Step>
+  <Step title="Use the token in API requests">
+    Pass the token in the `Authorization` header of every authenticated request.
+  </Step>
+</Steps>
+
+## Sending the token
+
+Include the token as a Bearer credential in the `Authorization` HTTP header:
+
+```
+Authorization: Bearer <your_supabase_access_token>
+```
+
+### Example: authenticated curl request
+
+```bash
+curl -X POST http://localhost:5000/api/projects \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "githubUrl": "https://github.com/facebook/react"
+  }'
+```
+
+## 401 error responses
+
+When authentication fails the API returns HTTP `401` with the standard error envelope.
+
+**No token provided:**
+
+```json
+{
+  "success": false,
+  "error": "No token provided"
+}
+```
+
+**Invalid or expired token:**
+
+```json
+{
+  "success": false,
+  "error": "Invalid or expired token"
+}
+```
+
+## Token expiry
+
+Supabase access tokens are short-lived JWTs (typically 1 hour). When your token expires, requests to authenticated endpoints will return `401`. Sign in again through the CodeAtlas UI to obtain a fresh token.
+
+<Tip>
+If you are building a client application, use the Supabase client library to handle token refresh automatically. The library will keep the session alive and update the stored token without requiring the user to sign in again.
+</Tip>

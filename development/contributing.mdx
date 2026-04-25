@@ -1,0 +1,182 @@
+---
+title: "Contributing to CodeAtlas: workflow and standards"
+description: "Branching strategy, commit conventions, pull request process, and the four quality commands every contribution must pass before review."
+---
+
+CodeAtlas welcomes contributions of all kinds — bug fixes, new features, documentation improvements, and test coverage. Before opening a pull request, run through the four quality commands described below to make sure your changes integrate cleanly with the rest of the codebase.
+
+## Contribution workflow
+
+<Steps>
+
+<Step title="Fork and clone the repository">
+
+Fork the repository on GitHub, then clone your fork locally:
+
+```bash
+git clone https://github.com/your-username/CodeAtlas
+cd CodeAtlas
+npm install
+```
+
+The root `npm install` installs dependencies for all three workspaces (`frontend`, `backend`, and `packages/shared-schema`) in a single pass.
+
+</Step>
+
+<Step title="Create a feature branch">
+
+Create a new branch from `main` using the `feature/` prefix:
+
+```bash
+git checkout -b feature/amazing-feature
+```
+
+Use descriptive branch names that communicate intent at a glance. Keep branches focused on a single concern — one branch per feature or bug fix makes reviews easier and keeps history readable.
+
+<Note>
+For bug fixes, use the prefix `fix/` instead of `feature/`. For documentation changes, use `docs/`.
+</Note>
+
+</Step>
+
+<Step title="Make your changes">
+
+Write your code, then verify the full test suite passes and the build compiles without errors before moving on. See [Pre-PR checklist](#pre-pr-checklist) below for the exact commands.
+
+If you are adding new functionality, add corresponding tests in `backend/src/test/`. See [Testing](/development/testing) for patterns and mocking conventions.
+
+</Step>
+
+<Step title="Commit your changes">
+
+Write a clear, imperative commit message that completes the sentence "This commit will…":
+
+```bash
+git commit -m 'Add amazing feature'
+```
+
+Commit conventions:
+
+- Use the imperative mood: `Add`, `Fix`, `Update`, `Remove` — not `Added` or `Fixes`.
+- Keep the subject line under 72 characters.
+- If the change needs more context, add a blank line after the subject and write a short body.
+
+<CodeGroup>
+
+```bash Single-line commit
+git commit -m 'Add rate limit headers to job polling endpoint'
+```
+
+```bash Multi-line commit
+git commit -m 'Fix Gemini retry logic on 429 responses
+
+Previously the service threw immediately on a 429. Now it
+waits for the Retry-After header value before retrying,
+preventing cascading failures under load.'
+```
+
+</CodeGroup>
+
+</Step>
+
+<Step title="Run the pre-PR checklist">
+
+Before pushing, run all four quality commands from the repository root:
+
+```bash
+npm run test       # All tests must pass
+npm run format     # Auto-formats code — commit any changes this makes
+npm run lint       # No lint errors permitted
+npm run build      # TypeScript must compile without errors
+```
+
+Fix any failures before continuing. See [Pre-PR checklist](#pre-pr-checklist) for details on what each command checks.
+
+</Step>
+
+<Step title="Push and open a pull request">
+
+Push your branch to your fork and open a pull request against the `main` branch:
+
+```bash
+git push origin feature/amazing-feature
+```
+
+In the pull request description:
+
+- Summarize what the change does and why.
+- Reference any related issues (e.g., `Closes #42`).
+- Note any manual testing steps that reviewers should follow.
+
+A maintainer will review your PR and may request changes before merging.
+
+</Step>
+
+</Steps>
+
+## Pre-PR checklist
+
+Every pull request must satisfy all four checks. Run them in order — `format` before `lint` avoids noise from formatting-related lint failures.
+
+<AccordionGroup>
+  <Accordion title="npm run test — tests pass">
+    Runs the full Vitest suite once (`vitest run`). All existing tests must pass, and any new code you added should have corresponding test coverage.
+
+    ```bash
+    npm run test
+    ```
+
+    If tests fail, check the output for the failing file and assertion, fix the issue, and re-run. See [Testing](/development/testing) for the full test setup.
+  </Accordion>
+  <Accordion title="npm run format — code is formatted">
+    Runs Prettier across all workspaces and **rewrites files in place**. After running this, check `git diff` — if Prettier changed anything, stage those changes and amend your commit (or add a new one).
+
+    ```bash
+    npm run format
+    git diff          # Review any formatting changes
+    git add -A        # Stage them
+    ```
+
+    <Tip>
+    Configure your editor to run Prettier on save to avoid last-minute formatting surprises. The project's Prettier config is inherited from the root `package.json`.
+    </Tip>
+  </Accordion>
+  <Accordion title="npm run lint — linting passes">
+    Runs ESLint across all workspaces. The project uses `@typescript-eslint` rules and `eslint-plugin-prettier`, so lint and formatting are checked together.
+
+    ```bash
+    npm run lint
+    ```
+
+    Lint errors must be fixed — warnings are acceptable but should be addressed where practical. Do not suppress lint rules with `// eslint-disable` comments without a code comment explaining why the suppression is necessary.
+  </Accordion>
+  <Accordion title="npm run build — types check">
+    Compiles the frontend (`next build`) and backend (`tsc`) in sequence. TypeScript errors fail the build, so this is effectively a full type check across all workspaces.
+
+    ```bash
+    npm run build
+    ```
+
+    <Warning>
+    A passing build in development mode does not guarantee a passing production build. Always run `npm run build` — not just `tsc` — before opening a PR.
+    </Warning>
+  </Accordion>
+</AccordionGroup>
+
+## Code style
+
+- **TypeScript everywhere** — All new files should be `.ts` or `.tsx`. Avoid `any` unless unavoidable, and add a comment explaining why when you do.
+- **Zod for validation** — New request bodies must have a corresponding Zod schema in `backend/src/validations/` and be applied via `validation.middleware.ts`.
+- **No raw SQL** — All database access goes through the Supabase client.
+- **Service layer for logic** — Controllers should only parse requests and call services. Business logic belongs in `backend/src/services/`.
+
+## Related pages
+
+<CardGroup cols={2}>
+  <Card title="Project structure" icon="folder-tree" href="/development/project-structure">
+    Where to find controllers, services, middleware, and shared types.
+  </Card>
+  <Card title="Testing" icon="flask-conical" href="/development/testing">
+    How to write and run tests, and how mocking is structured.
+  </Card>
+</CardGroup>

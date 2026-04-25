@@ -1,0 +1,161 @@
+---
+title: "Authenticating with the CodeAtlas API"
+description: "How to sign in with Supabase Auth, retrieve a bearer token, and make authenticated requests to the CodeAtlas REST API."
+---
+
+CodeAtlas uses Supabase Auth for user authentication. When you sign in through the web UI, the Supabase client issues a JSON Web Token (JWT) that you include in API requests. This page explains how to get that token and how to pass it to protected endpoints.
+
+## How authentication works
+
+The CodeAtlas backend validates requests using Supabase's JWT verification. When you call a protected endpoint, the server extracts the token from the `Authorization` header and calls `supabase.auth.getUser(token)` to confirm it is valid and retrieve the associated user. If the token is missing, malformed, or expired, the request is rejected with a `401` response.
+
+The web UI handles this automatically — you sign in at `/login` and the Supabase client stores and refreshes your session. If you are calling the API directly (for example, from a script or another service), you need to retrieve a token manually.
+
+## Which endpoints require authentication
+
+Most CodeAtlas endpoints are publicly accessible. Only repository ingestion requires a valid token:
+
+| Method | Endpoint        | Authentication required |
+| ------ | --------------- | ----------------------- |
+| `GET`  | `/api/projects` | No                      |
+| `GET`  | `/api/projects/:id` | No                  |
+| `GET`  | `/api/projects/:id/nodes` | No              |
+| `GET`  | `/api/projects/:id/security` | No           |
+| `POST` | `/api/projects` | **Yes**                 |
+| `GET`  | `/api/jobs/:id` | No                      |
+
+## Getting a bearer token
+
+### Option 1: From the web UI session
+
+If you have signed in through the CodeAtlas web UI, you can copy your current token from the browser console or from your app's Supabase client instance:
+
+```javascript
+import { supabase } from '@/lib/supabase';
+
+const { data: { session } } = await supabase.auth.getSession();
+const token = session?.access_token;
+console.log(token);
+```
+
+### Option 2: Sign in programmatically
+
+Use the Supabase JavaScript client to sign in with email and password and retrieve the access token directly:
+
+```javascript
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  'https://<project-ref>.supabase.co',
+  '<your-anon-key>'
+);
+
+const { data, error } = await supabase.auth.signInWithPassword({
+  email: 'you@example.com',
+  password: 'your-password',
+});
+
+const token = data.session?.access_token;
+```
+
+<Note>
+  You must have a registered account in your Supabase project before signing in programmatically. Create one through the CodeAtlas web UI at `/signup`, or add users directly in the Supabase dashboard under **Authentication → Users**.
+</Note>
+
+## Making authenticated API requests
+
+Pass the token as a `Bearer` token in the `Authorization` header of every request to a protected endpoint.
+
+### curl
+
+```bash
+curl -X POST http://localhost:5000/api/projects \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "githubUrl": "https://github.com/facebook/react"
+  }'
+```
+
+### JavaScript (fetch)
+
+```javascript
+const response = await fetch('http://localhost:5000/api/projects', {
+  method: 'POST',
+  headers: {
+    'Authorization': `Bearer ${token}`,
+    'Content-Type': 'application/json',
+  },
+  body: JSON.stringify({
+    githubUrl: 'https://github.com/facebook/react',
+  }),
+});
+
+const data = await response.json();
+```
+
+### Python (requests)
+
+```python
+import requests
+
+response = requests.post(
+    "http://localhost:5000/api/projects",
+    headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    },
+    json={
+        "githubUrl": "https://github.com/facebook/react"
+    },
+)
+
+data = response.json()
+```
+
+## Error responses
+
+If authentication fails, the API returns a `401` response with a JSON body describing the problem.
+
+**Missing token** — no `Authorization` header, or the header does not start with `Bearer `:
+
+```json
+{
+  "error": "No token provided"
+}
+```
+
+**Invalid or expired token** — the token does not pass Supabase JWT validation:
+
+```json
+{
+  "error": "Invalid or expired token"
+}
+```
+
+**Authentication service unavailable** — the backend could not reach Supabase to validate the token (returns `500`):
+
+```json
+{
+  "error": "Authentication service unavailable"
+}
+```
+
+## Token expiry
+
+Supabase access tokens expire after one hour by default. The Supabase client in the web UI refreshes tokens automatically using the stored refresh token. If you are using tokens in a script or long-running process, check the token expiry and re-authenticate before it expires, or call `supabase.auth.refreshSession()` to get a new access token.
+
+<Tip>
+  When building integrations, store the refresh token alongside the access token so you can obtain a new access token without prompting the user to sign in again.
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Environment variables" icon="gear" href="/configuration/environment-variables">
+    Configure the Supabase keys required for the backend auth middleware and frontend client.
+  </Card>
+  <Card title="Rate limiting" icon="gauge" href="/configuration/rate-limiting">
+    Understand per-IP rate limits that apply to authenticated ingestion requests.
+  </Card>
+</CardGroup>

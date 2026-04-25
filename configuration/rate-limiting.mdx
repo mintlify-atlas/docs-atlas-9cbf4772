@@ -1,0 +1,176 @@
+---
+title: "Rate limiting in CodeAtlas: limits and configuration"
+description: "How CodeAtlas enforces global and ingestion-specific rate limits, what headers to inspect, how to handle 429 responses, and how to tune the limits."
+---
+
+CodeAtlas applies two layers of rate limiting to protect the Gemini AI processing pipeline from abuse and to keep costs predictable. This page describes both limits, the response headers that communicate limit status, and how to configure the ingestion limit for your deployment.
+
+## Two-tier rate limiting
+
+CodeAtlas uses [express-rate-limit](https://github.com/express-rate-limit/express-rate-limit) to enforce limits at two levels. Both limits are applied per IP address.
+
+| Limit | Scope | Window | Max requests |
+| ----- | ----- | ------ | ------------ |
+| Global | Every API endpoint | 1 minute | 100 |
+| Ingestion | `POST /api/projects` only | 15 minutes | 5 |
+
+The global limiter runs first. If a request passes the global check, the ingestion limiter applies an additional, stricter check on the ingestion endpoint. A request that would exceed either limit receives a `429 Too Many Requests` response and is not processed.
+
+### Global rate limit
+
+All requests to any CodeAtlas API endpoint — including project reads, job polling, and ingestion — count toward the global limit of **100 requests per minute**. This limit is designed to allow normal browsing and polling while preventing runaway clients.
+
+### Ingestion rate limit
+
+Submitting a repository for analysis (`POST /api/projects`) is limited to **5 requests per 15 minutes** per IP. This stricter limit reflects the cost and time of calling Gemini for structural analysis, security auditing, and embedding generation on each submission.
+
+<Note>
+  The 15-minute window is a sliding window that resets relative to your first request, not at a fixed clock interval. If you submit a repository at 2:00 PM, your window resets at 2:15 PM.
+</Note>
+
+## Rate limit response headers
+
+Every CodeAtlas API response includes three headers that tell you where you stand relative to the active limit:
+
+| Header | Description |
+| ------ | ----------- |
+| `RateLimit-Limit` | The maximum number of requests allowed in the current window |
+| `RateLimit-Remaining` | How many requests you can still make before being throttled |
+| `RateLimit-Reset` | Unix timestamp (seconds) when the current window resets |
+
+Example response headers from a healthy request:
+
+```http
+HTTP/1.1 200 OK
+RateLimit-Limit: 100
+RateLimit-Remaining: 87
+RateLimit-Reset: 1714060800
+```
+
+<Tip>
+  Read `RateLimit-Remaining` on every response. When it approaches zero, slow down your request rate or wait until `RateLimit-Reset` before continuing.
+</Tip>
+
+## 429 Too Many Requests responses
+
+When a rate limit is exceeded, CodeAtlas returns HTTP `429` with a JSON body. The shape differs slightly by which limit was hit.
+
+**Global limit exceeded:**
+
+```json
+{
+  "success": false,
+  "error": "Too many requests from this IP, please try again later."
+}
+```
+
+**Ingestion limit exceeded:**
+
+```json
+{
+  "success": false,
+  "error": "Too many project ingestion requests. Please try again after 15 minutes."
+}
+```
+
+The server also logs a warning for each IP that exceeds the ingestion limit:
+
+```
+WARN: Rate limit exceeded for IP: 192.168.1.1
+```
+
+## Configuring the ingestion rate limit
+
+You can tune the ingestion-specific limit using two environment variables in `backend/.env.local`. The global limit (100 per minute) is hardcoded and not configurable.
+
+<ParamField path="INGESTION_RATE_LIMIT_WINDOW_MS" type="number" default="900000">
+  The length of the ingestion rate limit window in milliseconds. The default `900000` equals 15 minutes. To change the window to 30 minutes, set this to `1800000`.
+</ParamField>
+
+<ParamField path="INGESTION_RATE_LIMIT_MAX" type="number" default="5">
+  The maximum number of ingestion requests per IP allowed within the window. The default is `5`. Increase this for internal deployments where higher throughput is acceptable.
+</ParamField>
+
+### Example: lenient configuration for internal use
+
+```env backend/.env.local
+# Allow 20 ingestion requests per hour
+INGESTION_RATE_LIMIT_WINDOW_MS=3600000
+INGESTION_RATE_LIMIT_MAX=20
+```
+
+### Example: stricter configuration for public deployments
+
+```env backend/.env.local
+# Allow only 2 ingestion requests per 30 minutes
+INGESTION_RATE_LIMIT_WINDOW_MS=1800000
+INGESTION_RATE_LIMIT_MAX=2
+```
+
+## Best practices for staying within limits
+
+### Polling job status
+
+After submitting a repository, you will likely poll `GET /api/jobs/:id` to check progress. Each poll counts toward the global 100-per-minute limit. Use an exponential backoff strategy to avoid burning through your allowance:
+
+```javascript
+async function pollJob(jobId, token) {
+  const delays = [2000, 4000, 8000, 16000, 30000]; // ms
+  let attempt = 0;
+
+  while (true) {
+    const res = await fetch(`http://localhost:5000/api/jobs/${jobId}`);
+    const data = await res.json();
+
+    if (data.data.status === 'COMPLETED' || data.data.status === 'FAILED') {
+      return data;
+    }
+
+    const delay = delays[Math.min(attempt, delays.length - 1)];
+    await new Promise(resolve => setTimeout(resolve, delay));
+    attempt++;
+  }
+}
+```
+
+### Retrying after a 429
+
+When you receive a `429` response, read the `RateLimit-Reset` header to find out exactly when you can retry, rather than guessing:
+
+```javascript
+async function ingestWithRetry(payload, token) {
+  const res = await fetch('http://localhost:5000/api/projects', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  if (res.status === 429) {
+    const resetAt = parseInt(res.headers.get('RateLimit-Reset') ?? '0', 10);
+    const waitMs = (resetAt * 1000) - Date.now() + 500; // 500ms buffer
+    console.log(`Rate limited. Retrying in ${Math.ceil(waitMs / 1000)}s`);
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+    return ingestWithRetry(payload, token); // retry once
+  }
+
+  return res.json();
+}
+```
+
+<Warning>
+  Do not retry immediately on a `429`. The rate limit window has not reset, so retrying instantly will continue to return `429` and waste requests. Always wait until `RateLimit-Reset`.
+</Warning>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Environment variables" icon="gear" href="/configuration/environment-variables">
+    Full reference for `INGESTION_RATE_LIMIT_WINDOW_MS` and all other configuration variables.
+  </Card>
+  <Card title="Authentication" icon="lock" href="/configuration/authentication">
+    How to pass a bearer token with ingestion requests to protected endpoints.
+  </Card>
+</CardGroup>

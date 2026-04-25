@@ -1,0 +1,398 @@
+---
+title: 'Projects API'
+description: 'Reference for all five CodeAtlas project endpoints: listing, fetching, documentation nodes, security findings, and repository ingestion.'
+---
+
+The projects API is the primary interface for reading analyzed repository data and for triggering new ingestion jobs. Four endpoints are publicly readable; the ingestion endpoint requires authentication.
+
+---
+
+## List all projects
+
+Returns an array of all projects whose ingestion completed successfully, ordered by creation date descending. Supports an optional keyword search.
+
+**`GET /api/projects`**
+
+### Query parameters
+
+<ParamField path="query.search" type="string">
+  Filter projects by repository name or owner. Performs a case-insensitive partial match against both `repo` and `owner` fields.
+</ParamField>
+
+### Response fields
+
+Returns `data` as a `Project[]` array.
+
+<ResponseField name="success" type="boolean" required>
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="data" type="Project[]" required>
+  Array of project objects.
+  <Expandable title="Project properties">
+    <ResponseField name="id" type="string">
+      Unique project identifier (UUID).
+    </ResponseField>
+    <ResponseField name="github_url" type="string">
+      Full GitHub repository URL.
+    </ResponseField>
+    <ResponseField name="owner" type="string">
+      GitHub username or organization that owns the repository.
+    </ResponseField>
+    <ResponseField name="repo" type="string">
+      Repository name.
+    </ResponseField>
+    <ResponseField name="description" type="string | null">
+      AI-generated description of the repository.
+    </ResponseField>
+    <ResponseField name="is_public" type="boolean">
+      Whether the project is publicly visible.
+    </ResponseField>
+    <ResponseField name="creator_id" type="string | null">
+      Supabase user ID of the user who ingested this project.
+    </ResponseField>
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp of when the project record was created.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+<CodeGroup>
+
+```bash cURL
+curl http://localhost:5000/api/projects
+```
+
+```bash cURL with search
+curl "http://localhost:5000/api/projects?search=react"
+```
+
+</CodeGroup>
+
+```json Response
+{
+  "success": true,
+  "data": [
+    {
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "github_url": "https://github.com/facebook/react",
+      "owner": "facebook",
+      "repo": "react",
+      "description": "A declarative, component-based JavaScript library for building user interfaces.",
+      "is_public": true,
+      "creator_id": "user-uuid-here",
+      "created_at": "2024-03-15T10:30:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+## Get project by ID
+
+Returns metadata for a single project.
+
+**`GET /api/projects/:id`**
+
+### Path parameters
+
+<ParamField path="id" type="string" required>
+  The UUID of the project to retrieve.
+</ParamField>
+
+### Response fields
+
+<ResponseField name="success" type="boolean" required>
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="data" type="Project" required>
+  A single project object. See [List all projects](#list-all-projects) for field definitions.
+</ResponseField>
+
+### Example
+
+```bash cURL
+curl http://localhost:5000/api/projects/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+```
+
+```json Response
+{
+  "success": true,
+  "data": {
+    "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "github_url": "https://github.com/facebook/react",
+    "owner": "facebook",
+    "repo": "react",
+    "description": "A declarative, component-based JavaScript library for building user interfaces.",
+    "is_public": true,
+    "creator_id": "user-uuid-here",
+    "created_at": "2024-03-15T10:30:00.000Z"
+  }
+}
+```
+
+**404 response** (project not found):
+
+```json
+{
+  "success": false,
+  "error": "Project not found"
+}
+```
+
+---
+
+## Get documentation nodes
+
+Returns the full documentation tree for a project. Nodes represent the AI-generated architectural analysis and are organized as `PILLAR`, `SUMMARY`, and `FILE_DOC` types forming a parent–child hierarchy.
+
+**`GET /api/projects/:id/nodes`**
+
+### Path parameters
+
+<ParamField path="id" type="string" required>
+  The UUID of the project.
+</ParamField>
+
+### Response fields
+
+<ResponseField name="success" type="boolean" required>
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="data" type="DocumentationNode[]" required>
+  Array of documentation node objects.
+  <Expandable title="DocumentationNode properties">
+    <ResponseField name="id" type="string">
+      Unique node identifier (UUID).
+    </ResponseField>
+    <ResponseField name="project_id" type="string">
+      UUID of the parent project.
+    </ResponseField>
+    <ResponseField name="parent_id" type="string | null">
+      UUID of the parent node. `null` for top-level `PILLAR` nodes.
+    </ResponseField>
+    <ResponseField name="title" type="string">
+      Node title, e.g. the architectural pillar name or file path.
+    </ResponseField>
+    <ResponseField name="content" type="string | null">
+      Markdown-formatted documentation content generated by Gemini.
+    </ResponseField>
+    <ResponseField name="type" type="string">
+      Node classification. One of `PILLAR`, `SUMMARY`, or `FILE_DOC`.
+    </ResponseField>
+    <ResponseField name="is_edited_by_admin" type="boolean">
+      `true` if the content has been manually edited after AI generation.
+    </ResponseField>
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+```bash cURL
+curl http://localhost:5000/api/projects/a1b2c3d4-e5f6-7890-abcd-ef1234567890/nodes
+```
+
+```json Response
+{
+  "success": true,
+  "data": [
+    {
+      "id": "node-uuid-1",
+      "project_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "parent_id": null,
+      "title": "Rendering Engine",
+      "content": "The core reconciler responsible for computing and applying UI updates...",
+      "type": "PILLAR",
+      "is_edited_by_admin": false,
+      "created_at": "2024-03-15T10:35:00.000Z"
+    },
+    {
+      "id": "node-uuid-2",
+      "project_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "parent_id": "node-uuid-1",
+      "title": "packages/react-reconciler/src/ReactFiber.js",
+      "content": "Defines the Fiber data structure used to represent nodes in the work-in-progress tree...",
+      "type": "FILE_DOC",
+      "is_edited_by_admin": false,
+      "created_at": "2024-03-15T10:35:05.000Z"
+    }
+  ]
+}
+```
+
+---
+
+## Get security findings
+
+Returns all security findings for a project, identified by the Gemini-powered OWASP Top 10 audit.
+
+**`GET /api/projects/:id/security`**
+
+### Path parameters
+
+<ParamField path="id" type="string" required>
+  The UUID of the project.
+</ParamField>
+
+### Response fields
+
+<ResponseField name="success" type="boolean" required>
+  `true` on success.
+</ResponseField>
+
+<ResponseField name="data" type="SecurityFinding[]" required>
+  Array of security finding objects.
+  <Expandable title="SecurityFinding properties">
+    <ResponseField name="id" type="string">
+      Unique finding identifier (UUID).
+    </ResponseField>
+    <ResponseField name="project_id" type="string">
+      UUID of the parent project.
+    </ResponseField>
+    <ResponseField name="file_path" type="string">
+      Relative path to the file containing the finding.
+    </ResponseField>
+    <ResponseField name="line_number" type="number | null">
+      Approximate line number of the vulnerability. May be `null` if not determinable.
+    </ResponseField>
+    <ResponseField name="severity" type="string">
+      Risk level. One of `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`.
+    </ResponseField>
+    <ResponseField name="vulnerability" type="string">
+      Short name or category of the vulnerability (e.g., "Hardcoded Credentials", "SQL Injection").
+    </ResponseField>
+    <ResponseField name="description" type="string">
+      Plain-language description of the vulnerability.
+    </ResponseField>
+    <ResponseField name="suggested_fix" type="string | null">
+      AI-generated remediation advice. May be `null` if no fix was suggested.
+    </ResponseField>
+    <ResponseField name="status" type="string">
+      Review status. One of `OPEN`, `FALSE_POSITIVE`, or `RESOLVED`.
+    </ResponseField>
+    <ResponseField name="created_at" type="string">
+      ISO 8601 timestamp.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+```bash cURL
+curl http://localhost:5000/api/projects/a1b2c3d4-e5f6-7890-abcd-ef1234567890/security
+```
+
+```json Response
+{
+  "success": true,
+  "data": [
+    {
+      "id": "finding-uuid-1",
+      "project_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "file_path": "src/server/auth.js",
+      "line_number": 42,
+      "severity": "HIGH",
+      "vulnerability": "SQL Injection",
+      "description": "User-supplied input is interpolated directly into an SQL query without parameterization, creating a SQL injection vulnerability.",
+      "suggested_fix": "Use parameterized queries or a query builder. Replace `query('SELECT * FROM users WHERE id=' + userId)` with `query('SELECT * FROM users WHERE id=$1', [userId])`.",
+      "status": "OPEN",
+      "created_at": "2024-03-15T10:36:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+## Ingest a repository
+
+Triggers the AI-powered ingestion pipeline for a GitHub repository. The request returns immediately with a `projectId` and `jobId`; the actual analysis runs asynchronously. Use [GET /api/jobs/:id](/api/jobs) to poll progress.
+
+**`POST /api/projects`**
+
+<Note>
+This endpoint requires authentication. Include a valid Supabase Bearer token in the `Authorization` header. See [Authentication](/api/authentication) for details.
+</Note>
+
+### Request body
+
+<ParamField body="githubUrl" type="string" required>
+  A valid public GitHub repository URL in the format `https://github.com/<owner>/<repo>`. The server parses the `owner` and `repo` from this URL automatically.
+</ParamField>
+
+### Response fields
+
+<ResponseField name="success" type="boolean" required>
+  `true` when the ingestion job is created.
+</ResponseField>
+
+<ResponseField name="data" type="object" required>
+  <Expandable title="properties" defaultOpen>
+    <ResponseField name="projectId" type="string">
+      UUID of the created or existing project record.
+    </ResponseField>
+    <ResponseField name="jobId" type="string">
+      UUID of the ingestion job. Use this to poll [GET /api/jobs/:id](/api/jobs).
+    </ResponseField>
+    <ResponseField name="repository" type="string">
+      Repository identifier in `owner/repo` format.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+### Example
+
+```bash cURL
+curl -X POST http://localhost:5000/api/projects \
+  -H "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." \
+  -H "Content-Type: application/json" \
+  -d '{
+    "githubUrl": "https://github.com/facebook/react"
+  }'
+```
+
+```json Response (201)
+{
+  "success": true,
+  "data": {
+    "projectId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "jobId": "job-uuid-5678",
+    "repository": "facebook/react"
+  }
+}
+```
+
+**400 response** (invalid URL):
+
+```json
+{
+  "success": false,
+  "error": "Enter a valid GitHub repository URL"
+}
+```
+
+**401 response** (missing or invalid token):
+
+```json
+{
+  "success": false,
+  "error": "No token provided"
+}
+```
+
+**429 response** (ingestion rate limit exceeded):
+
+```json
+{
+  "success": false,
+  "error": "Too many project ingestion requests. Please try again after 15 minutes."
+}
+```

@@ -1,0 +1,133 @@
+---
+title: "Repository analysis: AI-powered architecture mapping"
+description: "Learn how CodeAtlas uses Google Gemini to analyze a GitHub repository and produce a StructuralManifest with architectural pillars, file mappings, and semantic embeddings."
+---
+
+CodeAtlas's repository analysis feature uses Google Gemini to examine a GitHub repository's source files and produce a complete architectural map called a **StructuralManifest**. When you submit a repository URL, this is the first major AI step in the ingestion pipeline — it produces the documentation tree you navigate in the UI and query through the API.
+
+## What the analysis produces
+
+After a successful analysis, CodeAtlas generates a `StructuralManifest` — a structured object containing everything Gemini learned about the codebase:
+
+| Field | Type | Description |
+|---|---|---|
+| `projectName` | `string` | The inferred display name for the project |
+| `highLevelSummary` | `string` | A 3–4 sentence description of purpose, business value, and technical highlights |
+| `quickStart` | `string` | Prerequisites, environment setup, and commands to run the project |
+| `pillars` | `Pillar[]` | An array of 4–6 domain pillars, each with a name, description, and associated files |
+
+Each `Pillar` object contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | `string` | An evocative domain name (e.g., "Identity & Trust Perimeter") |
+| `description` | `string` | A 4–6 sentence architectural description |
+| `associatedFiles` | `string[]` | File paths that belong to this domain |
+
+## How Gemini identifies domain pillars
+
+The analysis is run by `AnalysisService.runStructuralScout`, which crafts a detailed prompt instructing Gemini to act as a **Principal Software Architect and Technical Writer**. The prompt directs Gemini to:
+
+1. Write a project summary covering purpose, business value, and what makes it technically interesting
+2. Generate a practical quick start guide derived from the README, `package.json`, and entry files
+3. Identify **4 to 6 domain pillars** — the core functional areas of the system
+4. Map every meaningful source file to its most relevant pillar
+
+Pillar names are intentionally evocative rather than generic. Instead of "Authentication", you might see "Identity & Trust Perimeter". The descriptions must be at least 4 sentences and written with confident, architectural language — mentioning specific technologies, patterns, and design decisions observed in the code.
+
+<Note>
+Config boilerplate and non-architecturally significant files are intentionally excluded from pillar mappings. The analysis focuses on files that carry business logic or structural weight.
+</Note>
+
+## How documentation nodes are created
+
+Once the `StructuralManifest` is returned from Gemini, `PersistenceService` converts it into **documentation nodes** stored in the `documentation_nodes` table. There are three node types, forming a hierarchy:
+
+<Steps>
+  <Step title="SUMMARY node (root)">
+    A single root node is created for the project with `type: "SUMMARY"` and `title: "Project Overview"`. Its `content` combines the `highLevelSummary` and `quickStart` fields. A vector embedding is generated from the project name and summary text using the `gemini-embedding-001` model.
+  </Step>
+  <Step title="PILLAR nodes (children of SUMMARY)">
+    One `PILLAR` node is inserted per pillar. Each node's `title` is the pillar name and its `content` is the full 4–6 sentence description. The `parent_id` points to the root SUMMARY node. An embedding is generated from the pillar name and description.
+  </Step>
+  <Step title="FILE_DOC nodes (optional, children of PILLAR)">
+    Individual file-level documentation nodes can be attached as children of a pillar node. These carry `type: "FILE_DOC"` and represent specific file documentation within a domain.
+  </Step>
+</Steps>
+
+Every node carries a `DocumentationNode` shape:
+
+```typescript
+interface DocumentationNode {
+  id: string;
+  project_id: string;
+  parent_id?: string | null;  // null for root SUMMARY node
+  title: string;
+  content?: string | null;
+  embedding: number[] | null; // vector for semantic search
+  type: 'PILLAR' | 'SUMMARY' | 'FILE_DOC';
+  is_edited_by_admin: boolean;
+  created_at: string;
+}
+```
+
+## Accessing analysis results
+
+Retrieve all documentation nodes for a project using the nodes endpoint:
+
+```bash
+GET /api/projects/:id/nodes
+```
+
+No authentication is required for this endpoint.
+
+### Example response
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "node_abc123",
+      "project_id": "proj_xyz789",
+      "parent_id": null,
+      "title": "Project Overview",
+      "content": "CodeAtlas is a full-stack application that transforms GitHub repositories into interactive architectural documentation...\n\n## Quick Start\nnpm install && npm run dev",
+      "type": "SUMMARY",
+      "embedding": [0.012, -0.034, 0.091],
+      "is_edited_by_admin": false,
+      "created_at": "2024-01-15T10:30:00Z"
+    },
+    {
+      "id": "node_def456",
+      "project_id": "proj_xyz789",
+      "parent_id": "node_abc123",
+      "title": "Identity & Trust Perimeter",
+      "content": "This pillar owns all authentication and authorization logic. It integrates Supabase JWT validation on every protected route, ensuring that only verified users can trigger repository ingestion...",
+      "type": "PILLAR",
+      "embedding": [0.045, 0.023, -0.087],
+      "is_edited_by_admin": false,
+      "created_at": "2024-01-15T10:30:05Z"
+    },
+    {
+      "id": "node_ghi789",
+      "project_id": "proj_xyz789",
+      "parent_id": "node_abc123",
+      "title": "Real-time Data Orchestration",
+      "content": "This domain manages the ingestion job state machine and all asynchronous processing...",
+      "type": "PILLAR",
+      "embedding": [-0.011, 0.067, 0.034],
+      "is_edited_by_admin": false,
+      "created_at": "2024-01-15T10:30:06Z"
+    }
+  ]
+}
+```
+
+## Reliability and retry logic
+
+The Gemini call uses an exponential backoff strategy with up to 5 retries. Delays progress as 1s, 2s, 4s, 8s, and 16s between attempts. Authentication errors (401, 403) and Zod validation failures are not retried — they surface immediately. This means the structural analysis is resilient to transient Gemini API congestion without masking genuine configuration problems.
+
+<Tip>
+The response format is enforced at both the Gemini API level (via a JSON schema in `generationConfig.responseSchema`) and at the application level (via Zod parsing). If Gemini returns a response that doesn't match the expected shape, the analysis fails fast rather than persisting malformed data.
+</Tip>

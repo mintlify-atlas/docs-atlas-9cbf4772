@@ -1,0 +1,175 @@
+---
+title: 'Jobs API'
+description: 'Reference for polling ingestion job status, including all status values, the full response shape, and a recommended polling strategy.'
+---
+
+When you submit a repository via `POST /api/projects`, analysis runs in the background across multiple pipeline stages. The jobs endpoint lets you poll the status of that background process and display real-time progress to users. No authentication is required to poll a job.
+
+---
+
+## Get job status
+
+Returns the current status and progress of an ingestion job.
+
+**`GET /api/jobs/:id`**
+
+### Path parameters
+
+<ParamField path="id" type="string" required>
+  The job UUID returned in the `jobId` field of the `POST /api/projects` response.
+</ParamField>
+
+### Response fields
+
+<ResponseField name="success" type="boolean" required>
+  `true` when the job is found.
+</ResponseField>
+
+<ResponseField name="data" type="object" required>
+  <Expandable title="properties" defaultOpen>
+    <ResponseField name="status" type="string" required>
+      Current pipeline stage. See [Status values](#status-values) for all possibilities.
+    </ResponseField>
+    <ResponseField name="progress" type="number" required>
+      Integer from `0` to `100` representing completion percentage.
+    </ResponseField>
+    <ResponseField name="projectId" type="string" required>
+      UUID of the project this job belongs to.
+    </ResponseField>
+    <ResponseField name="error" type="string | null" required>
+      Error message if the job reached `FAILED` status; otherwise `null`.
+    </ResponseField>
+  </Expandable>
+</ResponseField>
+
+## Status values
+
+Jobs advance through a linear pipeline. A job that encounters an unrecoverable error transitions to `FAILED` and stops.
+
+| Status | Description |
+| ------ | ----------- |
+| `PENDING` | Job created; pipeline not yet started |
+| `CLONING` | Repository is being cloned via Git |
+| `ANALYZING` | Gemini AI is running structural and security analysis |
+| `COMPLETED` | Pipeline finished successfully; documentation and security findings are available |
+| `FAILED` | An error occurred; check the `error` field for details |
+
+```
+PENDING → CLONING → ANALYZING → COMPLETED
+                         ↓
+                       FAILED
+```
+
+<Note>
+The `ANALYZING` stage covers both the structural documentation scan and the OWASP security audit. Progress moves from 40% to 100% across this stage.
+</Note>
+
+## Example responses
+
+### In-progress job
+
+```bash cURL
+curl http://localhost:5000/api/jobs/job-uuid-5678
+```
+
+```json Response — CLONING
+{
+  "success": true,
+  "data": {
+    "status": "CLONING",
+    "progress": 10,
+    "projectId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "error": null
+  }
+}
+```
+
+```json Response — ANALYZING
+{
+  "success": true,
+  "data": {
+    "status": "ANALYZING",
+    "progress": 70,
+    "projectId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "error": null
+  }
+}
+```
+
+### Completed job
+
+```json Response — COMPLETED
+{
+  "success": true,
+  "data": {
+    "status": "COMPLETED",
+    "progress": 100,
+    "projectId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "error": null
+  }
+}
+```
+
+Once the status is `COMPLETED`, you can fetch the results from:
+
+- [`GET /api/projects/:id/nodes`](/api/projects#get-documentation-nodes) — documentation tree
+- [`GET /api/projects/:id/security`](/api/projects#get-security-findings) — security findings
+
+### Failed job
+
+```json Response — FAILED
+{
+  "success": true,
+  "data": {
+    "status": "FAILED",
+    "progress": 0,
+    "projectId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    "error": "Repository clone failed: remote: Repository not found."
+  }
+}
+```
+
+### Job not found
+
+```json Response — 404
+{
+  "success": false,
+  "error": "Job not found"
+}
+```
+
+## Polling strategy
+
+Because ingestion can take anywhere from a few seconds to several minutes depending on repository size, poll the endpoint at a regular interval and stop when the terminal state is reached.
+
+<Tip>
+Poll every 2–3 seconds. Stop polling when `status` is `COMPLETED` or `FAILED`.
+</Tip>
+
+```javascript
+async function pollJobUntilDone(jobId) {
+  const INTERVAL_MS = 2500;
+
+  while (true) {
+    const response = await fetch(`http://localhost:5000/api/jobs/${jobId}`);
+    const { data } = await response.json();
+
+    console.log(`Status: ${data.status} — ${data.progress}%`);
+
+    if (data.status === 'COMPLETED') {
+      console.log('Ingestion complete. Fetching results...');
+      return data.projectId;
+    }
+
+    if (data.status === 'FAILED') {
+      throw new Error(`Ingestion failed: ${data.error}`);
+    }
+
+    await new Promise(resolve => setTimeout(resolve, INTERVAL_MS));
+  }
+}
+```
+
+<Warning>
+Do not poll more frequently than once per second. Excessive polling can trigger the global rate limit of 100 requests per minute and result in `429` responses.
+</Warning>

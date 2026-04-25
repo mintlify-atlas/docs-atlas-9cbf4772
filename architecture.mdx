@@ -1,0 +1,184 @@
+---
+title: "CodeAtlas architecture and ingestion pipeline"
+description: "A deep-dive into CodeAtlas's monorepo structure, eight backend services, multi-stage job state machine, and the shared-schema package that connects them."
+---
+
+CodeAtlas is built as a TypeScript monorepo with three workspaces — a Next.js frontend, an Express backend, and a shared Zod schema package — all wired together through a multi-stage AI ingestion pipeline. This page explains how each part of the system fits together, from the moment you submit a repository URL to the moment your knowledge map is ready.
+
+## Monorepo structure
+
+The repository uses npm workspaces to manage three packages from a single root `package.json`.
+
+```
+CodeAtlas/
+├── frontend/                  # Next.js 16 web application
+│   └── src/
+│       ├── app/               # App router pages and layouts
+│       ├── components/        # React components (shadcn/ui, Three.js)
+│       ├── lib/               # Supabase browser client, utilities
+│       └── providers/         # Auth context providers
+│
+├── backend/                   # Express API server
+│   └── src/
+│       ├── app.ts             # Express setup: middleware, routes, error handler
+│       ├── server.ts          # Entry point, port binding
+│       ├── config/            # Logger (Winston), Supabase admin client
+│       ├── controllers/       # Request handlers for projects and jobs
+│       ├── routes/            # /api/projects and /api/jobs route definitions
+│       ├── services/          # All business logic (see service catalog below)
+│       ├── middleware/        # Auth, rate limiting, error handling
+│       ├── validations/       # Zod request-body schemas
+│       └── utils/             # Shared helpers
+│
+└── packages/
+    └── shared-schema/         # @codeatlas/shared-schema
+        └── src/
+            ├── analysis.schema.ts    # StructuralManifest, Pillar types + Zod schemas
+            ├── security.schema.ts    # SecurityReport, SecurityFinding types + schemas
+            ├── project.types.ts      # Project interface
+            ├── jobs.types.ts         # IngestionJob interface, JobStatus union
+            ├── docs_node.types.ts    # DocumentationNode interface, NodeType union
+            └── sec_find.types.ts     # SecurityFinding interface
+```
+
+## The shared-schema package
+
+`@codeatlas/shared-schema` is the single source of truth for data shapes used by both the Express API and the Next.js frontend. It is a private workspace package — never published to npm — and is consumed via the npm workspace protocol.
+
+Every type is defined as both a **Zod schema** (for runtime validation) and an **inferred TypeScript type**. This means the same schema validates Gemini API responses on the backend and types API responses on the frontend with zero duplication.
+
+```typescript
+// packages/shared-schema/src/analysis.schema.ts
+
+export const structuralManifestSchema = z.object({
+  projectName: z.string(),
+  highLevelSummary: z.string(),
+  quickStart: z.string(),
+  pillars: z.array(pillarSchema),        // 4–6 domain pillars per analysis
+});
+
+// TypeScript type is inferred automatically — no separate interface needed
+export type StructuralManifest = z.infer<typeof structuralManifestSchema>;
+```
+
+The backend imports from `@codeatlas/shared-schema` to validate Gemini's JSON output before saving it. The frontend imports the same types to get end-to-end type safety on API responses.
+
+## The ingestion pipeline
+
+When a repository is submitted, CodeAtlas runs it through a five-stage asynchronous pipeline. Each stage updates the job record's `status` and `progress` fields in real time so the frontend can display live progress.
+
+<Steps>
+
+<Step title="PENDING — job created">
+
+`JobService.createJob()` inserts a new row into `ingestion_jobs` with `status: 'PENDING'` and `progress: 0`. The controller immediately returns the `projectId` and `jobId` to the caller — the heavy lifting runs asynchronously in the background.
+
+</Step>
+
+<Step title="CLONING — repository cloning">
+
+`GitService.cloneRepository()` performs a shallow clone (`--depth 1`) into a temporary directory at `backend/temp/<jobId>/`. Progress advances from 10% to 30% during this stage. If the clone fails for any reason, the job transitions directly to `FAILED` with a descriptive error message.
+
+</Step>
+
+<Step title="ANALYZING — structural reconnaissance">
+
+`FileService.getProjectContext()` walks the cloned directory iteratively (to avoid stack overflows on deep trees), skipping known noise directories (`node_modules`, `.git`, `dist`, `.next`, etc.) and reading only files with allowed extensions (`.ts`, `.js`, `.tsx`, `.py`, `.go`, `.rs`, `.java`, `.sol`, and others). Files larger than 100 KB are skipped. Up to 20 files are read in parallel per batch.
+
+The assembled context string is passed to `AnalysisService.runStructuralScout()`, which sends a structured prompt to Gemini and receives a validated `StructuralManifest` containing 4–6 named domain pillars, a high-level summary, and a quick-start guide.
+
+</Step>
+
+<Step title="SECURITY_AUDIT — vulnerability scanning">
+
+`SecurityService.runSecurityAudit()` sends the same repository context to Gemini with a security-focused prompt. Gemini returns a `SecurityReport` containing individual findings categorized as `LOW`, `MEDIUM`, `HIGH`, or `CRITICAL`. Each finding includes the exact `file_path`, an approximate `line_number`, a description of the vulnerability, and a suggested fix.
+
+</Step>
+
+<Step title="COMPLETED — persistence and cleanup">
+
+`PersistenceService.saveManifest()` writes the architectural manifest to `documentation_nodes` and updates the `projects` table. For every node (one root summary and one per pillar), it generates a vector embedding using `GeminiService.generateEmbedding()` — this enables semantic search across the documentation tree.
+
+`PersistenceService.saveSecurityReport()` writes each finding to `security_findings`, also with vector embeddings for semantic vulnerability search.
+
+Finally, `GitService.cleanup()` removes the temporary clone directory.
+
+</Step>
+
+</Steps>
+
+### Job state machine
+
+```
+PENDING → CLONING → ANALYZING → SECURITY_AUDIT → COMPLETED
+                 ↘           ↘                 ↘
+                  FAILED       FAILED            FAILED
+```
+
+Any stage can transition to `FAILED` if an unrecoverable error occurs. The `error_message` field on the `ingestion_jobs` row captures the reason. The `progress` field is an integer from 0 to 100 and is updated at each meaningful checkpoint.
+
+## Backend service catalog
+
+The eight services that make up the backend are loosely coupled — each has a single, well-defined responsibility.
+
+| Service | File | Responsibility |
+|---|---|---|
+| **ProjectService** | `services/project.service.ts` | Upserts project records in the `projects` table. Returns an existing project if the `github_url` already exists, or creates a new one. |
+| **JobService** | `services/jobs.service.ts` | Creates ingestion job records and drives the state machine. Exposes `createJob`, `updateJobStatus`, and `getJobById`. |
+| **GitService** | `services/git.service.ts` | Performs shallow `git clone` into a job-scoped temp directory. Handles cleanup after the pipeline completes. |
+| **FileService** | `services/repoContext.service.ts` | Iterative directory walker with a concurrency limit of 20 parallel file reads. Filters by extension and file size (max 100 KB). Returns a single concatenated context string. |
+| **AnalysisService** | `services/analysis.service.ts` | Wraps GeminiService to produce a `StructuralManifest`. Prompts Gemini to act as a Principal Software Architect and identify 4–6 domain pillars with rich descriptions. |
+| **SecurityService** | `services/security.service.ts` | Wraps GeminiService to produce a `SecurityReport`. Prompts Gemini to act as a Senior Security Researcher scanning for OWASP Top 10 issues, memory leaks, and hardcoded secrets. |
+| **GeminiService** | `services/gemini.service.ts` | Core Gemini API client. Supports structured JSON generation (validated against Zod schemas) and embedding generation. Implements exponential backoff with up to 5 retries (delays: 1s, 2s, 4s, 8s, 16s). |
+| **PersistenceService** | `services/persistence.service.ts` | Saves the structural manifest and security findings to Supabase. Generates vector embeddings for every node and finding to power semantic search. |
+
+### GeminiService: structured generation with Zod validation
+
+The `generateStructuredJson` method enforces a two-layer validation approach. It passes a `geminiSchema` (a plain JSON schema object) in the `generationConfig.responseSchema` field of the Gemini API request, which forces the model to return valid JSON. On receipt, the response is parsed again with a Zod schema for runtime type safety:
+
+```typescript
+static async generateStructuredJson<T>(
+  prompt: string,
+  geminiSchema: object,      // Gemini's responseSchema (forces structured output)
+  zodSchema: z.ZodType<T>    // Validates and types the response in the backend
+): Promise<T>
+```
+
+Authentication errors (401/403) and Zod validation errors are not retried — they fail immediately. All other errors trigger the exponential backoff loop.
+
+## Database schema
+
+CodeAtlas uses four tables in Supabase (PostgreSQL). All tables store vector embeddings alongside their content rows to support semantic search.
+
+| Table | Key columns | Purpose |
+|---|---|---|
+| `projects` | `id`, `github_url`, `owner`, `repo`, `embedding`, `description`, `creator_id`, `is_public` | One row per ingested repository. The `embedding` column stores the project-level summary vector. |
+| `ingestion_jobs` | `id`, `project_id`, `status`, `progress`, `error_message` | Tracks pipeline state for each ingestion run. `status` is the `JobStatus` union type; `progress` is 0–100. |
+| `documentation_nodes` | `id`, `project_id`, `parent_id`, `title`, `content`, `type`, `embedding`, `is_edited_by_admin` | Stores the architectural knowledge tree. `type` is `SUMMARY` (root), `PILLAR` (domain pillar), or `FILE_DOC`. `parent_id` links pillars to their root summary node. |
+| `security_findings` | `id`, `project_id`, `file_path`, `line_number`, `severity`, `vulnerability`, `description`, `suggested_fix`, `embedding`, `status` | One row per security finding. `severity` is `LOW \| MEDIUM \| HIGH \| CRITICAL`; `status` is `OPEN \| FALSE_POSITIVE \| RESOLVED`. |
+
+### Documentation node hierarchy
+
+```
+documentation_nodes
+└── SUMMARY (root)          ← highLevelSummary + quickStart
+    ├── PILLAR              ← pillar.name + pillar.description
+    ├── PILLAR
+    └── PILLAR
+```
+
+Each `PILLAR` node's `parent_id` points to the `SUMMARY` root node for its project. This tree is what the frontend renders as the interactive knowledge map.
+
+## Middleware and request lifecycle
+
+Every inbound request to the Express server passes through this middleware stack, defined in `backend/src/app.ts`:
+
+1. **CORS** — Allows cross-origin requests from the Next.js frontend.
+2. **JSON body parser** — Parses `application/json` request bodies.
+3. **Global rate limiter** — 100 requests per minute per IP across all endpoints.
+4. **Request logger** — Logs `METHOD /path` for every request via Winston.
+5. **Route handlers** — `/api/projects` and `/api/jobs`.
+6. **404 handler** — Returns `{ error: 'Route not found' }` for unknown paths.
+7. **Error handler** — Catches all thrown errors and returns a normalized `{ success: false, error: string }` response.
+
+The `/api/projects` POST endpoint additionally applies an **ingestion-specific rate limiter**: 5 requests per 15 minutes per IP, configurable via `INGESTION_RATE_LIMIT_WINDOW_MS` and `INGESTION_RATE_LIMIT_MAX`.
